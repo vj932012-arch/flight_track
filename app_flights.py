@@ -56,8 +56,6 @@ def fetch_live_pricing(api_key):
     destinations = ['MIA', 'MCO', 'JAX'] # ATL removed
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    
-    # Generate one exact timestamp for this entire fetch batch
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     progress_text = st.sidebar.empty()
@@ -81,28 +79,35 @@ def fetch_live_pricing(api_key):
             response.raise_for_status()
             data = response.json()
             
-            # --- THE FIX: Combine BOTH Google Flights categories ---
+            # Combine Best and Other flights to ensure a robust pool
             best_flights = data.get('best_flights', [])
             other_flights = data.get('other_flights', [])
             all_flights = best_flights + other_flights
             
             if len(all_flights) > 0:
-                # Grab up to the first 5 flights from the combined list
+                # Sort the combined list by price BEFORE inserting into the DB
+                all_flights = sorted(all_flights, key=lambda x: x.get('price', float('inf')))
+                
+                # Take the top 5 cheapest flights for this specific destination
                 for flight in all_flights[:5]:
                     price = flight.get('price', 0)
                     
                     flights_list = flight.get('flights', [])
                     if flights_list:
+                        # Sometimes multiple airlines operate the legs, grab the primary
                         airline = flights_list[0].get('airline', 'Unknown Airline')
                         stops = len(flights_list) - 1 
                     else:
                         airline = 'Unknown Airline'
                         stops = 1
+                        
+                    # Extract the shareable Google Flights URL
+                    flight_url = data.get('search_metadata', {}).get('google_flights_url', f"https://www.google.com/travel/flights?q=Flights%20from%20BLR%20to%20{dest}")
                     
                     c.execute('''
-                        INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (now, airline, dest, 'Google Flights', price, 2, stops))
+                        INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops, url)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (now, airline, dest, 'Google Flights', price, 2, stops, flight_url))
             else:
                 st.sidebar.warning(f"No flights found for {dest}.")
                 
@@ -112,6 +117,8 @@ def fetch_live_pricing(api_key):
     progress_text.text("✅ Live fetch complete!")
     conn.commit()
     conn.close()
+
+# ... (Keep Data Loading and Sidebar code the same) ...
 # ==========================================
 # 3. DATA LOADING 
 # ==========================================
@@ -207,8 +214,22 @@ else:
     st.subheader(f"Top 5 Cheapest Flights (Last check: {latest_time.strftime('%I:%M %p')})")
     
     if not latest_data.empty:
+        # THE FIX: Explicitly sort the entire latest dataset across ALL destinations by price
         top_5 = latest_data.sort_values(by='price', ascending=True).head(5)
-        display_df = top_5[['airline', 'destination', 'price', 'checked_bags', 'stops', 'source']].copy()
-        display_df.columns = ['Airline', 'Destination', 'Price (USD)', 'Checked Bags', 'Stops', 'Source']
+        
+        display_df = top_5[['airline', 'destination', 'price', 'checked_bags', 'stops', 'url']].copy()
+        display_df.columns = ['Airline', 'Destination', 'Price (USD)', 'Checked Bags', 'Stops', 'Link']
         display_df['Price (USD)'] = display_df['Price (USD)'].apply(lambda x: f"${x:,.2f}")
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        
+        st.dataframe(
+            display_df, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Link": st.column_config.LinkColumn(
+                    "Booking Link", 
+                    help="Click to view this exact route on Google Flights", 
+                    display_text="View Flight ✈️"
+                )
+            }
+        )
