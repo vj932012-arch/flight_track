@@ -56,6 +56,8 @@ def fetch_live_pricing(api_key):
     destinations = ['MIA', 'MCO', 'JAX'] # ATL removed
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    
+    # Generate one exact timestamp for this entire fetch batch
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     progress_text = st.sidebar.empty()
@@ -79,8 +81,14 @@ def fetch_live_pricing(api_key):
             response.raise_for_status()
             data = response.json()
             
-            if 'best_flights' in data and len(data['best_flights']) > 0:
-                for flight in data['best_flights'][:5]:
+            # --- THE FIX: Combine BOTH Google Flights categories ---
+            best_flights = data.get('best_flights', [])
+            other_flights = data.get('other_flights', [])
+            all_flights = best_flights + other_flights
+            
+            if len(all_flights) > 0:
+                # Grab up to the first 5 flights from the combined list
+                for flight in all_flights[:5]:
                     price = flight.get('price', 0)
                     
                     flights_list = flight.get('flights', [])
@@ -104,7 +112,6 @@ def fetch_live_pricing(api_key):
     progress_text.text("✅ Live fetch complete!")
     conn.commit()
     conn.close()
-
 # ==========================================
 # 3. DATA LOADING 
 # ==========================================
