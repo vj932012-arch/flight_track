@@ -29,7 +29,6 @@ def init_db():
         )
     ''')
     
-    # Check if table is empty, if so, generate the baseline history
     c.execute('SELECT COUNT(*) FROM flights')
     if c.fetchone()[0] == 0:
         _generate_mock_data(conn)
@@ -53,7 +52,7 @@ def _generate_mock_data(conn):
             ''', (timestamp.strftime('%Y-%m-%d %H:%M:%S'), random.choice(airlines), dest, 'Google Flights', round(price, 2), 2, 1))
 
 # ==========================================
-# 2. LIVE API FETCHER (SERPAPI - GOOGLE FLIGHTS)
+# 2. LIVE API FETCHER (SERPAPI)
 # ==========================================
 def fetch_live_pricing(api_key):
     destinations = ['ATL', 'MIA', 'MCO', 'JAX']
@@ -61,18 +60,17 @@ def fetch_live_pricing(api_key):
     c = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # Create a placeholder in Streamlit to show fetching progress
     progress_text = st.sidebar.empty()
     
     for dest in destinations:
-        progress_text.text(f"Fetching Google Flights for BLR ➔ {dest}...")
+        progress_text.text(f"Fetching BLR ➔ {dest}...")
         
         params = {
             "engine": "google_flights",
             "departure_id": "BLR",
             "arrival_id": dest,
-            "outbound_date": "2026-08-20", # Your target departure window
-            "return_date": "2027-01-20",   # Your target return window
+            "outbound_date": "2026-08-20",
+            "return_date": "2027-01-20",
             "currency": "USD",
             "hl": "en",
             "api_key": api_key
@@ -83,29 +81,22 @@ def fetch_live_pricing(api_key):
             response.raise_for_status()
             data = response.json()
             
-            # SerpApi categorizes top results under 'best_flights'
             if 'best_flights' in data and len(data['best_flights']) > 0:
                 best_flight = data['best_flights'][0]
                 price = best_flight.get('price', 0)
                 
-                # Extract airline (sometimes it's a combination of airlines)
                 flights_list = best_flight.get('flights', [])
                 if flights_list:
                     airline = flights_list[0].get('airline', 'Unknown Airline')
-                    # Calculate stops based on number of flight legs
                     stops = len(flights_list) - 1 
                 else:
                     airline = 'Unknown Airline'
                     stops = 1
                 
-                # Note: Google Flights API doesn't easily expose baggage allowances without deep scraping.
-                # Assuming 2 bags for long-haul international standard economy as a placeholder.
                 c.execute('''
                     INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (now, airline, dest, 'Google Flights', price, 2, stops))
-            else:
-                st.sidebar.warning(f"No flights found for {dest}.")
                 
         except Exception as e:
             st.sidebar.error(f"Error fetching {dest}: {e}")
@@ -126,19 +117,20 @@ def load_data():
     return df
 
 # ==========================================
-# 4. STREAMLIT UI BUILDER
+# 4. MAIN APPLICATION RENDER
 # ==========================================
 st.set_page_config(page_title="Flight Price Tracker", page_icon="✈️", layout="wide")
 
 init_db()
+raw_df = load_data()
+
+st.title("✈️ BLR to US Southeast Price Tracker")
+st.markdown("Monitoring routes to ATL, MIA, MCO, and JAX for **Aug 2026** departures.")
 
 # --- SIDEBAR CONTROLS ---
 st.sidebar.header("⚙️ API Configuration")
-
-# 1. Check if the key exists in Streamlit Secrets
 has_secret_key = "SERPAPI_KEY" in st.secrets
 
-# 2. If it does NOT exist, show the manual input box. Otherwise, show a success message.
 if not has_secret_key:
     manual_api_key = st.sidebar.text_input("SerpApi Key (Google Flights)", type="password", placeholder="Paste your key here...")
 else:
@@ -148,17 +140,27 @@ else:
 st.sidebar.divider()
 st.sidebar.header("🔄 Live Controls")
 
-# 3. The Fetch Button Logic
 if st.sidebar.button("Fetch Live Prices Now", use_container_width=True, type="primary"):
-    # Decide which key to use: the secret one, or the manually typed one
     active_key = st.secrets["SERPAPI_KEY"] if has_secret_key else manual_api_key
-    
     if not active_key:
         st.sidebar.error("⚠️ Please enter your SerpApi key or add it to your secrets.")
     else:
         fetch_live_pricing(active_key)
-        st.cache_data.clear()      # Clear the cache to ensure new data loads
-        st.rerun()                 # Reload the page
+        st.cache_data.clear()      
+        st.rerun()                 
+
+st.sidebar.divider()
+
+# --- SIDEBAR FILTERS ---
+st.sidebar.header("📊 Filter Options")
+selected_dests = st.sidebar.multiselect("Destinations", options=raw_df['destination'].unique(), default=raw_df['destination'].unique())
+require_two_bags = st.sidebar.checkbox("🎒 Show 2+ Checked Bags Only", value=True)
+
+# --- DEFINING THE FILTERED DATAFRAME ---
+filtered_df = raw_df[(raw_df['destination'].isin(selected_dests))]
+if require_two_bags:
+    filtered_df = filtered_df[filtered_df['checked_bags'] >= 2]
+
 # ==========================================
 # 5. DASHBOARD METRICS & CHARTS
 # ==========================================
