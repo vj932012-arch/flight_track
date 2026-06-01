@@ -82,25 +82,17 @@ def fetch_live_pricing(api_key):
             response.raise_for_status()
             data = response.json()
             
-            # Combine Best and Other flights to ensure a robust pool
             best_flights = data.get('best_flights', [])
             other_flights = data.get('other_flights', [])
             all_flights = best_flights + other_flights
             
             if len(all_flights) > 0:
-                # Remove flights with missing prices so the sorter doesn't crash
                 valid_flights = [f for f in all_flights if isinstance(f.get('price'), (int, float))]
-                
-                # Sort the combined list by price BEFORE inserting into the DB
                 sorted_flights = sorted(valid_flights, key=lambda x: x.get('price', float('inf')))
-                
-                # Extract the shareable Google Flights URL
                 flight_url = data.get('search_metadata', {}).get('google_flights_url', f"https://www.google.com/travel/flights?q=Flights%20from%20BLR%20to%20{dest}")
                 
-                # Take the top 5 cheapest flights for this specific destination
                 for flight in sorted_flights[:5]:
                     price = flight.get('price')
-                    
                     flights_list = flight.get('flights', [])
                     if flights_list:
                         airline = flights_list[0].get('airline', 'Unknown Airline')
@@ -131,8 +123,6 @@ def load_data():
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM flights", conn)
     
-    # --- SELF-HEALING SCHEMA ---
-    # If the user's DB is from an older version and missing the 'url' column, add it!
     if 'url' not in df.columns:
         df['url'] = "https://www.google.com/travel/flights"
         try:
@@ -140,11 +130,11 @@ def load_data():
             c.execute("ALTER TABLE flights ADD COLUMN url TEXT DEFAULT 'https://www.google.com/travel/flights'")
             conn.commit()
         except Exception:
-            pass # Ignore if it somehow fails
+            pass
             
     if not df.empty:
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        # Safely apply timezone conversions
+        # errors='coerce' prevents bad dates from crashing the app
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
         try:
             df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
         except Exception:
@@ -210,23 +200,68 @@ if require_two_bags and not filtered_df.empty:
     filtered_df = filtered_df[filtered_df['checked_bags'] >= 2]
 
 # ==========================================
-# 5. DASHBOARD METRICS & CHARTS
+# 5. DASHBOARD METRICS & CHARTS (BULLETPROOF)
 # ==========================================
 if filtered_df.empty:
-    st.warning("No flight data matches your current filter criteria. Try fetching live prices!")
+    st.warning("No flight data matches your current filter criteria. Try clicking 'Fetch Live Prices Now'!")
 else:
-    latest_time = filtered_df['timestamp'].max()
-    latest_data = filtered_df[filtered_df['timestamp'] == latest_time]
-    
-    col1, col2, col3 = st.columns(3)
-    global_min = raw_df['price'].min()
-    filtered_min = filtered_df['price'].min()
-    current_min = latest_data['price'].min() if not latest_data.empty else None
-    
-    with col1:
-        st.metric("All-Time Lowest", f"${global_min:,.2f}")
-    with col2:
-        st.metric("Lowest Matching Filters", f"${filtered_min:,.2f}")
-    with col3:
-        if current_min:
-            best_route = latest_data.loc[latest_data['price'].idxmin()]
+    try:
+        latest_time = filtered_df['timestamp'].max()
+        latest_data = filtered_df[filtered_df['timestamp'] == latest_time]
+        
+        col1, col2, col3 = st.columns(3)
+        global_min = raw_df['price'].min()
+        filtered_min = filtered_df['price'].min()
+        current_min = latest_data['price'].min() if not latest_data.empty else None
+        
+        with col1:
+            st.metric("All-Time Lowest", f"${global_min:,.2f}")
+        with col2:
+            st.metric("Lowest Matching Filters", f"${filtered_min:,.2f}")
+        with col3:
+            if current_min is not None and not latest_data.empty:
+                # Safely get the best route without crashing on ties
+                best_route = latest_data.sort_values(by='price').iloc[0]
+                st.metric(f"Current Best ({best_route['destination']})", f"${current_min:,.2f}", delta=str(best_route['airline']), delta_color="off")
+    except Exception as e:
+        st.error(f"Error calculating metrics: {e}")
+
+    st.divider()
+
+    try:
+        st.subheader("Price Trends")
+        trend_df = filtered_df.groupby(['timestamp', 'destination'])['price'].min().reset_index()
+        fig = px.line(trend_df, x='timestamp', y='price', color='destination', markers=True, title="Lowest Available Price per Destination Over Time")
+        fig.update_layout(hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error rendering chart: {e}")
+
+    st.divider()
+
+    try:
+        # Safely format the timestamp header
+        time_str = latest_time.strftime('%I:%M %p') if pd.notnull(latest_time) else "Unknown Time"
+        st.subheader(f"Top 5 Cheapest Flights (Last check: {time_str})")
+        
+        if not latest_data.empty:
+            top_5 = latest_data.sort_values(by='price', ascending=True).head(5)
+            
+            display_df = top_5[['airline', 'destination', 'price', 'checked_bags', 'stops', 'url']].copy()
+            display_df.columns = ['Airline', 'Destination', 'Price (USD)', 'Checked Bags', 'Stops', 'Link']
+            display_df['Price (USD)'] = display_df['Price (USD)'].apply(lambda x: f"${x:,.2f}")
+            
+            st.dataframe(
+                display_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Link": st.column_config.LinkColumn(
+                        "Booking Link", 
+                        help="Click to view this route on Google Flights", 
+                        display_text="View Flight ✈️"
+                    )
+                }
+            )
+    except Exception as e:
+        st.error(f"Error rendering table: {e}. If the schema is completely broken, try clicking 'Reset Database' in the sidebar.")
