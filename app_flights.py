@@ -5,6 +5,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import random
 import requests
+import os
 
 DB_NAME = 'flight_tracker.db'
 
@@ -23,7 +24,8 @@ def init_db():
             source TEXT,
             price REAL,
             checked_bags INTEGER,
-            stops INTEGER
+            stops INTEGER,
+            url TEXT
         )
     ''')
     
@@ -37,23 +39,24 @@ def init_db():
 def _generate_mock_data(conn):
     """Generates baseline historical data."""
     airlines = ['Etihad Airways', 'Air India', 'Qatar Airways', 'British Airways']
-    destinations = ['MIA', 'MCO', 'JAX'] # ATL removed
+    destinations = ['MIA', 'MCO', 'JAX'] 
     now = datetime.now()
     c = conn.cursor()
     for i in range(48):
         timestamp = now - timedelta(minutes=30 * (48 - i))
         for dest in destinations:
             price = random.uniform(950, 1500) if dest != 'JAX' else random.uniform(1300, 1800)
+            dummy_url = f"https://www.google.com/travel/flights?q=Flights%20from%20BLR%20to%20{dest}"
             c.execute('''
-                INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (timestamp.strftime('%Y-%m-%d %H:%M:%S'), random.choice(airlines), dest, 'Google Flights', round(price, 2), 2, 1))
+                INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops, url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (timestamp.strftime('%Y-%m-%d %H:%M:%S'), random.choice(airlines), dest, 'Google Flights', round(price, 2), 2, 1, dummy_url))
 
 # ==========================================
 # 2. LIVE API FETCHER (SERPAPI)
 # ==========================================
 def fetch_live_pricing(api_key):
-    destinations = ['MIA', 'MCO', 'JAX'] # ATL removed
+    destinations = ['MIA', 'MCO', 'JAX']
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -88,21 +91,20 @@ def fetch_live_pricing(api_key):
                 # Sort the combined list by price BEFORE inserting into the DB
                 all_flights = sorted(all_flights, key=lambda x: x.get('price', float('inf')))
                 
+                # Extract the shareable Google Flights URL
+                flight_url = data.get('search_metadata', {}).get('google_flights_url', f"https://www.google.com/travel/flights?q=Flights%20from%20BLR%20to%20{dest}")
+                
                 # Take the top 5 cheapest flights for this specific destination
                 for flight in all_flights[:5]:
                     price = flight.get('price', 0)
                     
                     flights_list = flight.get('flights', [])
                     if flights_list:
-                        # Sometimes multiple airlines operate the legs, grab the primary
                         airline = flights_list[0].get('airline', 'Unknown Airline')
                         stops = len(flights_list) - 1 
                     else:
                         airline = 'Unknown Airline'
                         stops = 1
-                        
-                    # Extract the shareable Google Flights URL
-                    flight_url = data.get('search_metadata', {}).get('google_flights_url', f"https://www.google.com/travel/flights?q=Flights%20from%20BLR%20to%20{dest}")
                     
                     c.execute('''
                         INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops, url)
@@ -118,7 +120,6 @@ def fetch_live_pricing(api_key):
     conn.commit()
     conn.close()
 
-# ... (Keep Data Loading and Sidebar code the same) ...
 # ==========================================
 # 3. DATA LOADING 
 # ==========================================
@@ -167,9 +168,17 @@ if st.sidebar.button("Fetch Live Prices Now", use_container_width=True, type="pr
         st.cache_data.clear()      
         st.rerun()                 
 
+# --- DATABASE RESET ---
 st.sidebar.divider()
+st.sidebar.header("⚠️ System")
+if st.sidebar.button("🗑️ Reset Database", use_container_width=True):
+    if os.path.exists(DB_NAME):
+        os.remove(DB_NAME)
+        st.cache_data.clear()
+        st.rerun()
 
 # --- SIDEBAR FILTERS ---
+st.sidebar.divider()
 st.sidebar.header("📊 Filter Options")
 selected_dests = st.sidebar.multiselect("Destinations", options=raw_df['destination'].unique(), default=raw_df['destination'].unique())
 require_two_bags = st.sidebar.checkbox("🎒 Show 2+ Checked Bags Only", value=True)
@@ -177,59 +186,3 @@ require_two_bags = st.sidebar.checkbox("🎒 Show 2+ Checked Bags Only", value=T
 filtered_df = raw_df[(raw_df['destination'].isin(selected_dests))]
 if require_two_bags:
     filtered_df = filtered_df[filtered_df['checked_bags'] >= 2]
-
-# ==========================================
-# 5. DASHBOARD METRICS & CHARTS
-# ==========================================
-if filtered_df.empty:
-    st.warning("No flight data matches your current filter criteria.")
-else:
-    latest_time = filtered_df['timestamp'].max()
-    latest_data = filtered_df[filtered_df['timestamp'] == latest_time]
-    
-    col1, col2, col3 = st.columns(3)
-    global_min = raw_df['price'].min()
-    filtered_min = filtered_df['price'].min()
-    current_min = latest_data['price'].min() if not latest_data.empty else None
-    
-    with col1:
-        st.metric("All-Time Lowest", f"${global_min:,.2f}")
-    with col2:
-        st.metric("Lowest Matching Filters", f"${filtered_min:,.2f}")
-    with col3:
-        if current_min:
-            best_route = latest_data.loc[latest_data['price'].idxmin()]
-            st.metric(f"Current Best ({best_route['destination']})", f"${current_min:,.2f}", delta=best_route['airline'], delta_color="off")
-
-    st.divider()
-
-    st.subheader("Price Trends")
-    trend_df = filtered_df.groupby(['timestamp', 'destination'])['price'].min().reset_index()
-    fig = px.line(trend_df, x='timestamp', y='price', color='destination', markers=True, title="Lowest Available Price per Destination Over Time")
-    fig.update_layout(hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    st.subheader(f"Top 5 Cheapest Flights (Last check: {latest_time.strftime('%I:%M %p')})")
-    
-    if not latest_data.empty:
-        # THE FIX: Explicitly sort the entire latest dataset across ALL destinations by price
-        top_5 = latest_data.sort_values(by='price', ascending=True).head(5)
-        
-        display_df = top_5[['airline', 'destination', 'price', 'checked_bags', 'stops', 'url']].copy()
-        display_df.columns = ['Airline', 'Destination', 'Price (USD)', 'Checked Bags', 'Stops', 'Link']
-        display_df['Price (USD)'] = display_df['Price (USD)'].apply(lambda x: f"${x:,.2f}")
-        
-        st.dataframe(
-            display_df, 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={
-                "Link": st.column_config.LinkColumn(
-                    "Booking Link", 
-                    help="Click to view this exact route on Google Flights", 
-                    display_text="View Flight ✈️"
-                )
-            }
-        )
