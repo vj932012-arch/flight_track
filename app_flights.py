@@ -13,10 +13,10 @@ DB_NAME = 'flight_tracker.db'
 # OPTIONAL: AUTO-INSTALLER (Commented Out)
 # ==========================================
 # If you want the Python script to automatically execute the commands inside 
-# the "instructions" file before running, you can uncomment this block:
+# the "instructions.txt" file before running, you can uncomment this block:
 #
-# if os.path.exists("instructions"):
-#     with open("instructions", "r") as f:
+# if os.path.exists("instructions.txt"):
+#     with open("instructions.txt", "r") as f:
 #         for line in f:
 #             cmd = line.strip()
 #             if cmd:
@@ -97,8 +97,8 @@ st.markdown("Monitoring routes to ATL, MIA, MCO, and JAX for **Aug 2026** depart
 
 # --- INSTRUCTIONS FILE READER ---
 st.sidebar.header("System")
-if os.path.exists("instructions"):
-    with open("instructions", "r") as f:
+if os.path.exists("instructions.txt"):
+    with open("instructions.txt", "r") as f:
         instructions_text = f.read()
     
     with st.sidebar.expander("🛠️ Installation Instructions", expanded=False):
@@ -106,7 +106,7 @@ if os.path.exists("instructions"):
         st.code(instructions_text, language="bash")
 else:
     with st.sidebar.expander("🛠️ Installation Instructions", expanded=False):
-        st.warning("No 'instructions' file found in the directory.")
+        st.warning("No 'instructions.txt' file found in the directory.")
         st.markdown("Standard requirements:")
         st.code("pip install streamlit pandas plotly", language="bash")
 
