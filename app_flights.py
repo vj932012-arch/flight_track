@@ -55,7 +55,7 @@ def _generate_mock_data(conn):
 # 2. LIVE API FETCHER (SERPAPI)
 # ==========================================
 def fetch_live_pricing(api_key):
-    destinations = ['ATL', 'MIA', 'MCO', 'JAX']
+    destinations = ['MIA', 'MCO', 'JAX']
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -81,22 +81,30 @@ def fetch_live_pricing(api_key):
             response.raise_for_status()
             data = response.json()
             
+            # --- THE FIX: Loop through up to 5 of the best flights instead of just index [0] ---
             if 'best_flights' in data and len(data['best_flights']) > 0:
-                best_flight = data['best_flights'][0]
-                price = best_flight.get('price', 0)
                 
-                flights_list = best_flight.get('flights', [])
-                if flights_list:
-                    airline = flights_list[0].get('airline', 'Unknown Airline')
-                    stops = len(flights_list) - 1 
-                else:
-                    airline = 'Unknown Airline'
-                    stops = 1
+                # Extract the shareable Google Flights URL for this route
+                flight_url = data.get('search_metadata', {}).get('google_flights_url', f"https://www.google.com/travel/flights?q=Flights%20from%20BLR%20to%20{dest}")
                 
-                c.execute('''
-                    INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (now, airline, dest, 'Google Flights', price, 2, stops))
+                # Get up to the first 5 flights returned in the array
+                for flight in data['best_flights'][:5]:
+                    price = flight.get('price', 0)
+                    
+                    flights_list = flight.get('flights', [])
+                    if flights_list:
+                        airline = flights_list[0].get('airline', 'Unknown Airline')
+                        stops = len(flights_list) - 1 
+                    else:
+                        airline = 'Unknown Airline'
+                        stops = 1
+                    
+                    c.execute('''
+                        INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops, url)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (now, airline, dest, 'Google Flights', price, 2, stops, flight_url))
+            else:
+                st.sidebar.warning(f"No flights found for {dest}.")
                 
         except Exception as e:
             st.sidebar.error(f"Error fetching {dest}: {e}")
@@ -104,7 +112,6 @@ def fetch_live_pricing(api_key):
     progress_text.text("✅ Live fetch complete!")
     conn.commit()
     conn.close()
-
 # ==========================================
 # 3. DATA LOADING 
 # ==========================================
