@@ -5,8 +5,22 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import random
 import os
+import subprocess
 
 DB_NAME = 'flight_tracker.db'
+
+# ==========================================
+# OPTIONAL: AUTO-INSTALLER (Commented Out)
+# ==========================================
+# If you want the Python script to automatically execute the commands inside 
+# the "instructions" file before running, you can uncomment this block:
+#
+# if os.path.exists("instructions"):
+#     with open("instructions", "r") as f:
+#         for line in f:
+#             cmd = line.strip()
+#             if cmd:
+#                 subprocess.run(cmd, shell=True)
 
 # ==========================================
 # 1. DATABASE & MOCK DATA SETUP
@@ -28,7 +42,6 @@ def init_db():
         )
     ''')
     
-    # Check if table is empty
     c.execute('SELECT COUNT(*) FROM flights')
     if c.fetchone()[0] == 0:
         _generate_mock_data(conn)
@@ -45,13 +58,13 @@ def _generate_mock_data(conn):
     now = datetime.now()
     c = conn.cursor()
     
-    for i in range(96): # 48 hours * 2 (every 30 mins)
+    for i in range(96):
         timestamp = now - timedelta(minutes=30 * (96 - i))
         for dest in destinations:
             for source in sources:
                 price = random.uniform(950, 1500) if dest != 'JAX' else random.uniform(1300, 1800)
-                price = price + random.uniform(-20, 20) # slight price drift
-                bags = random.choice([0, 1, 2, 2]) # Weight towards 2 bags
+                price = price + random.uniform(-20, 20)
+                bags = random.choice([0, 1, 2, 2])
                 stops = random.choice([1, 2])
                 airline = random.choice(airlines)
                 
@@ -63,7 +76,7 @@ def _generate_mock_data(conn):
 # ==========================================
 # 2. DATA LOADING & FILTERING
 # ==========================================
-@st.cache_data(ttl=300) # Cache data for 5 minutes
+@st.cache_data(ttl=300)
 def load_data():
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM flights", conn)
@@ -76,14 +89,30 @@ def load_data():
 # ==========================================
 st.set_page_config(page_title="Flight Price Tracker", page_icon="✈️", layout="wide")
 
-# Initialize DB and Load Data
 init_db()
 raw_df = load_data()
 
 st.title("✈️ BLR to US Southeast Price Tracker")
 st.markdown("Monitoring routes to ATL, MIA, MCO, and JAX for **Aug 2026** departures.")
 
-# Sidebar Filters
+# --- INSTRUCTIONS FILE READER ---
+st.sidebar.header("System")
+if os.path.exists("instructions"):
+    with open("instructions", "r") as f:
+        instructions_text = f.read()
+    
+    with st.sidebar.expander("🛠️ Installation Instructions", expanded=False):
+        st.markdown("Required libraries to run this tracker:")
+        st.code(instructions_text, language="bash")
+else:
+    with st.sidebar.expander("🛠️ Installation Instructions", expanded=False):
+        st.warning("No 'instructions' file found in the directory.")
+        st.markdown("Standard requirements:")
+        st.code("pip install streamlit pandas plotly", language="bash")
+
+st.sidebar.divider()
+
+# --- Sidebar Filters ---
 st.sidebar.header("Filter Options")
 selected_dests = st.sidebar.multiselect(
     "Destinations", 
@@ -99,7 +128,6 @@ selected_sources = st.sidebar.multiselect(
 
 require_two_bags = st.sidebar.checkbox("🎒 Show 2+ Checked Bags Only", value=True)
 
-# Apply Filters
 filtered_df = raw_df[
     (raw_df['destination'].isin(selected_dests)) & 
     (raw_df['source'].isin(selected_sources))
@@ -114,7 +142,6 @@ if require_two_bags:
 if filtered_df.empty:
     st.warning("No flight data matches your current filter criteria.")
 else:
-    # --- Top Metrics ---
     latest_time = filtered_df['timestamp'].max()
     latest_data = filtered_df[filtered_df['timestamp'] == latest_time]
     
@@ -136,9 +163,7 @@ else:
 
     st.divider()
 
-    # --- Trend Chart ---
     st.subheader("Price Trends (Last 48 Hours)")
-    # Group by timestamp and destination to get the minimum price per interval
     trend_df = filtered_df.groupby(['timestamp', 'destination'])['price'].min().reset_index()
     
     fig = px.line(
@@ -155,14 +180,11 @@ else:
 
     st.divider()
 
-    # --- Leaderboard Table ---
     st.subheader(f"Top 5 Cheapest Flights (As of {latest_time.strftime('%I:%M %p')})")
     
     if not latest_data.empty:
-        # Sort by price and take top 5
         top_5 = latest_data.sort_values(by='price', ascending=True).head(5)
         
-        # Clean up dataframe for display
         display_df = top_5[['airline', 'destination', 'price', 'checked_bags', 'stops', 'source']].copy()
         display_df.columns = ['Airline', 'Destination', 'Price (USD)', 'Checked Bags', 'Stops', 'Source']
         display_df['Price (USD)'] = display_df['Price (USD)'].apply(lambda x: f"${x:,.2f}")
