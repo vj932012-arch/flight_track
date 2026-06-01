@@ -134,36 +134,31 @@ init_db()
 
 # --- SIDEBAR CONTROLS ---
 st.sidebar.header("⚙️ API Configuration")
-api_key = st.sidebar.text_input("SerpApi Key (Google Flights)", type="password", placeholder="Paste your key here...")
+
+# 1. Check if the key exists in Streamlit Secrets
+has_secret_key = "SERPAPI_KEY" in st.secrets
+
+# 2. If it does NOT exist, show the manual input box. Otherwise, show a success message.
+if not has_secret_key:
+    manual_api_key = st.sidebar.text_input("SerpApi Key (Google Flights)", type="password", placeholder="Paste your key here...")
+else:
+    st.sidebar.success("✅ API Key safely loaded from Secrets.")
+    manual_api_key = None
 
 st.sidebar.divider()
 st.sidebar.header("🔄 Live Controls")
 
+# 3. The Fetch Button Logic
 if st.sidebar.button("Fetch Live Prices Now", use_container_width=True, type="primary"):
-    if not api_key:
-        st.sidebar.error("⚠️ Please enter your SerpApi key first.")
+    # Decide which key to use: the secret one, or the manually typed one
+    active_key = st.secrets["SERPAPI_KEY"] if has_secret_key else manual_api_key
+    
+    if not active_key:
+        st.sidebar.error("⚠️ Please enter your SerpApi key or add it to your secrets.")
     else:
-        fetch_live_pricing(api_key)
+        fetch_live_pricing(active_key)
         st.cache_data.clear()      # Clear the cache to ensure new data loads
         st.rerun()                 # Reload the page
-
-st.sidebar.divider()
-
-# --- Load Data ---
-raw_df = load_data()
-
-st.title("✈️ BLR to US Southeast Price Tracker")
-st.markdown("Monitoring routes to ATL, MIA, MCO, and JAX for **Aug 2026** departures.")
-
-# Filters
-st.sidebar.header("📊 Filter Options")
-selected_dests = st.sidebar.multiselect("Destinations", options=raw_df['destination'].unique(), default=raw_df['destination'].unique())
-require_two_bags = st.sidebar.checkbox("🎒 Show 2+ Checked Bags Only", value=True)
-
-filtered_df = raw_df[(raw_df['destination'].isin(selected_dests))]
-if require_two_bags:
-    filtered_df = filtered_df[filtered_df['checked_bags'] >= 2]
-
 # ==========================================
 # 5. DASHBOARD METRICS & CHARTS
 # ==========================================
