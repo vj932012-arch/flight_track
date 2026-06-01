@@ -117,8 +117,7 @@ def load_data():
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     
     # Tell pandas it was recorded in UTC, then convert it to US/Eastern
-    df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
-    
+df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')    
     conn.close()
     return df
 
