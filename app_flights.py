@@ -4,9 +4,7 @@ import sqlite3
 import plotly.express as px
 from datetime import datetime, timedelta
 import random
-import os
 import requests
-import time
 
 DB_NAME = 'flight_tracker.db'
 
@@ -39,7 +37,7 @@ def init_db():
 def _generate_mock_data(conn):
     """Generates baseline historical data."""
     airlines = ['Etihad Airways', 'Air India', 'Qatar Airways', 'British Airways']
-    destinations = ['ATL', 'MIA', 'MCO', 'JAX']
+    destinations = ['MIA', 'MCO', 'JAX'] # ATL removed
     now = datetime.now()
     c = conn.cursor()
     for i in range(48):
@@ -55,7 +53,7 @@ def _generate_mock_data(conn):
 # 2. LIVE API FETCHER (SERPAPI)
 # ==========================================
 def fetch_live_pricing(api_key):
-    destinations = ['MIA', 'MCO', 'JAX']
+    destinations = ['MIA', 'MCO', 'JAX'] # ATL removed
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -81,13 +79,7 @@ def fetch_live_pricing(api_key):
             response.raise_for_status()
             data = response.json()
             
-            # --- THE FIX: Loop through up to 5 of the best flights instead of just index [0] ---
             if 'best_flights' in data and len(data['best_flights']) > 0:
-                
-                # Extract the shareable Google Flights URL for this route
-                flight_url = data.get('search_metadata', {}).get('google_flights_url', f"https://www.google.com/travel/flights?q=Flights%20from%20BLR%20to%20{dest}")
-                
-                # Get up to the first 5 flights returned in the array
                 for flight in data['best_flights'][:5]:
                     price = flight.get('price', 0)
                     
@@ -100,9 +92,9 @@ def fetch_live_pricing(api_key):
                         stops = 1
                     
                     c.execute('''
-                        INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops, url)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (now, airline, dest, 'Google Flights', price, 2, stops, flight_url))
+                        INSERT INTO flights (timestamp, airline, destination, source, price, checked_bags, stops)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (now, airline, dest, 'Google Flights', price, 2, stops))
             else:
                 st.sidebar.warning(f"No flights found for {dest}.")
                 
@@ -112,6 +104,7 @@ def fetch_live_pricing(api_key):
     progress_text.text("✅ Live fetch complete!")
     conn.commit()
     conn.close()
+
 # ==========================================
 # 3. DATA LOADING 
 # ==========================================
@@ -119,12 +112,12 @@ def fetch_live_pricing(api_key):
 def load_data():
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM flights", conn)
-    
-    # Convert the string to a datetime object
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     
-    # Tell pandas it was recorded in UTC, then convert it to US/Eastern
+    # Timezone fix
     df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
+    
+    conn.close()
     return df
 
 # ==========================================
@@ -135,15 +128,15 @@ st.set_page_config(page_title="Flight Price Tracker", page_icon="✈️", layout
 init_db()
 raw_df = load_data()
 
-st.title("✈️ BLR to US Southeast Price Tracker")
-st.markdown("Monitoring routes to ATL, MIA, MCO, and JAX for **Aug 2026** departures.")
+st.title("✈️ BLR to Florida Price Tracker")
+st.markdown("Monitoring routes to MIA, MCO, and JAX for **Aug 2026** departures.")
 
 # --- SIDEBAR CONTROLS ---
 st.sidebar.header("⚙️ API Configuration")
 has_secret_key = "SERPAPI_KEY" in st.secrets
 
 if not has_secret_key:
-    manual_api_key = st.sidebar.text_input("SerpApi Key (Google Flights)", type="password", placeholder="Paste your key here...")
+    manual_api_key = st.sidebar.text_input("SerpApi Key", type="password", placeholder="Paste your key here...")
 else:
     st.sidebar.success("✅ API Key safely loaded from Secrets.")
     manual_api_key = None
@@ -167,7 +160,6 @@ st.sidebar.header("📊 Filter Options")
 selected_dests = st.sidebar.multiselect("Destinations", options=raw_df['destination'].unique(), default=raw_df['destination'].unique())
 require_two_bags = st.sidebar.checkbox("🎒 Show 2+ Checked Bags Only", value=True)
 
-# --- DEFINING THE FILTERED DATAFRAME ---
 filtered_df = raw_df[(raw_df['destination'].isin(selected_dests))]
 if require_two_bags:
     filtered_df = filtered_df[filtered_df['checked_bags'] >= 2]
