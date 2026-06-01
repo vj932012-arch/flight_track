@@ -88,15 +88,18 @@ def fetch_live_pricing(api_key):
             all_flights = best_flights + other_flights
             
             if len(all_flights) > 0:
+                # Remove flights with missing prices so the sorter doesn't crash
+                valid_flights = [f for f in all_flights if isinstance(f.get('price'), (int, float))]
+                
                 # Sort the combined list by price BEFORE inserting into the DB
-                all_flights = sorted(all_flights, key=lambda x: x.get('price', float('inf')))
+                sorted_flights = sorted(valid_flights, key=lambda x: x.get('price', float('inf')))
                 
                 # Extract the shareable Google Flights URL
                 flight_url = data.get('search_metadata', {}).get('google_flights_url', f"https://www.google.com/travel/flights?q=Flights%20from%20BLR%20to%20{dest}")
                 
                 # Take the top 5 cheapest flights for this specific destination
-                for flight in all_flights[:5]:
-                    price = flight.get('price', 0)
+                for flight in sorted_flights[:5]:
+                    price = flight.get('price')
                     
                     flights_list = flight.get('flights', [])
                     if flights_list:
@@ -121,17 +124,32 @@ def fetch_live_pricing(api_key):
     conn.close()
 
 # ==========================================
-# 3. DATA LOADING 
+# 3. DATA LOADING (SELF-HEALING)
 # ==========================================
 @st.cache_data(ttl=300)
 def load_data():
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM flights", conn)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
     
-    # Timezone fix
-    df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
-    
+    # --- SELF-HEALING SCHEMA ---
+    # If the user's DB is from an older version and missing the 'url' column, add it!
+    if 'url' not in df.columns:
+        df['url'] = "https://www.google.com/travel/flights"
+        try:
+            c = conn.cursor()
+            c.execute("ALTER TABLE flights ADD COLUMN url TEXT DEFAULT 'https://www.google.com/travel/flights'")
+            conn.commit()
+        except Exception:
+            pass # Ignore if it somehow fails
+            
+    if not df.empty:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        # Safely apply timezone conversions
+        try:
+            df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
+        except Exception:
+            pass
+            
     conn.close()
     return df
 
@@ -180,9 +198,35 @@ if st.sidebar.button("🗑️ Reset Database", use_container_width=True):
 # --- SIDEBAR FILTERS ---
 st.sidebar.divider()
 st.sidebar.header("📊 Filter Options")
-selected_dests = st.sidebar.multiselect("Destinations", options=raw_df['destination'].unique(), default=raw_df['destination'].unique())
+if not raw_df.empty:
+    selected_dests = st.sidebar.multiselect("Destinations", options=raw_df['destination'].unique(), default=raw_df['destination'].unique())
+else:
+    selected_dests = []
+    
 require_two_bags = st.sidebar.checkbox("🎒 Show 2+ Checked Bags Only", value=True)
 
 filtered_df = raw_df[(raw_df['destination'].isin(selected_dests))]
-if require_two_bags:
+if require_two_bags and not filtered_df.empty:
     filtered_df = filtered_df[filtered_df['checked_bags'] >= 2]
+
+# ==========================================
+# 5. DASHBOARD METRICS & CHARTS
+# ==========================================
+if filtered_df.empty:
+    st.warning("No flight data matches your current filter criteria. Try fetching live prices!")
+else:
+    latest_time = filtered_df['timestamp'].max()
+    latest_data = filtered_df[filtered_df['timestamp'] == latest_time]
+    
+    col1, col2, col3 = st.columns(3)
+    global_min = raw_df['price'].min()
+    filtered_min = filtered_df['price'].min()
+    current_min = latest_data['price'].min() if not latest_data.empty else None
+    
+    with col1:
+        st.metric("All-Time Lowest", f"${global_min:,.2f}")
+    with col2:
+        st.metric("Lowest Matching Filters", f"${filtered_min:,.2f}")
+    with col3:
+        if current_min:
+            best_route = latest_data.loc[latest_data['price'].idxmin()]
