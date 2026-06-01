@@ -75,7 +75,7 @@ def fetch_live_pricing(api_key):
             "return_date": "2027-01-20",   # Your target return window
             "currency": "USD",
             "hl": "en",
-            "api_key": 1576947894bbcae3cabfd88f410a3553a0df38c97e1b79e8d75baab191b96e04
+            "api_key": "1576947894bbcae3cabfd88f410a3553a0df38c97e1b79e8d75baab191b96e04"
         }
         
         try:
